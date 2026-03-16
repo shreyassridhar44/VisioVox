@@ -1,0 +1,20 @@
+# Environments
+.venv
+venv/
+env/
+
+# Data and Model Weights (CRITICAL)
+data/raw/*
+data/processed/*
+*.pt
+*.pth
+*.weights
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# OS generated files
+.DS_Store
+Thumbs.db
