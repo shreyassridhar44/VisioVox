@@ -1,0 +1,14 @@
+torch
+torchvision
+torchaudio
+opencv-python
+mediapipe
+librosa
+ffmpeg-python
+transformers
+fastapi
+uvicorn
+pydantic
+numpy
+pandas
+tqdm
