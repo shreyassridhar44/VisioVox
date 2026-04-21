@@ -1,0 +1,14 @@
+torch>=2.6.0
+torchvision>=0.21.0
+torchaudio>=2.6.0
+opencv-python>=4.11.0
+mediapipe>=0.10.30
+librosa>=0.10.2
+ffmpeg-python>=0.2.0
+transformers>=4.48.0
+fastapi>=0.115.0
+uvicorn>=0.34.0
+pydantic>=2.10.0
+numpy>=2.1.0
+pandas>=2.2.0
+tqdm>=4.67.0

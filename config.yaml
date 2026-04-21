@@ -1,0 +1,19 @@
+# config.yaml
+
+paths:
+  raw_videos: "data/raw/videos"
+  raw_audio: "data/raw/audio"
+  processed_lips: "data/processed/lips"
+  processed_mixtures: "data/processed/mixtures"
+
+dataset:
+  # We will start with the debug strategy you outlined
+  num_speakers: 20
+  videos_per_speaker: 5
+  sample_rate: 16000
+  lip_frame_size: 112
+
+training:
+  batch_size: 16
+  learning_rate: 0.001
+  epochs: 50
