@@ -1,22 +1,58 @@
-# Environments
-.venv
-venv/
-env/
-
-# Data and Model Weights (CRITICAL)
-data/raw/*
-data/processed/*
-*.pt
-*.pth
-*.weights
-
-# Python cache
+# ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyo
+*.pyd
 
-# OS generated files
-.DS_Store
-Thumbs.db
+# ── Virtual environments ──────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
 
+# ── Model weights & checkpoints ───────────────────────────────────────────────
+# Keep the checkpoints/ folder in git but ignore the actual .pth files
+# (weights are too large for GitHub; store on Google Drive / Colab)
+*.pt
+*.pth
+*.weights
+*.onnx
+*.bin
+
+# ── Dataset (CRITICAL — VoxCeleb2 license prohibits redistribution) ───────────
+data/raw/*
+data/processed/*
+
+# ── Backend job working directories ──────────────────────────────────────────
+# Created at runtime by FastAPI. Contains uploaded videos, extracted audio,
+# lip crops, isolated WAVs, and VTT files. Never commit user data.
+jobs/
+
+# ── Test artefacts (generated during development, not source code) ────────────
+test_output/
+test_video.mp4
+deploy.prototxt
+res10_300x300_ssd.caffemodel
+
+# ── Frontend build output ─────────────────────────────────────────────────────
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# ── Colab / notebook artefacts ────────────────────────────────────────────────
 visiovox_colab.zip
+*.ipynb_checkpoints/
+.ipynb_checkpoints/
+
+# ── OS generated ──────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+Thumbs.db
+desktop.ini
+
+# ── IDE / editor ──────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
