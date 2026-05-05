@@ -1,14 +1,36 @@
-torch>=2.6.0
-torchvision>=0.21.0
-torchaudio>=2.6.0
-opencv-python>=4.11.0
-mediapipe>=0.10.30
+# VisioVox requirements
+# Install PyTorch separately first (see README):
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+# Then install the rest:
+#   pip install -r requirements.txt
+
+# Core ML
+torch>=2.1.0
+torchvision>=0.16.0
+torchaudio>=2.1.0
+
+# Audio
 librosa>=0.10.2
+soundfile>=0.12.1
+openai-whisper>=20231117
+
+# Vision
+opencv-python>=4.11.0
+mediapipe>=0.10.14
+
+# Video / audio extraction
 ffmpeg-python>=0.2.0
-transformers>=4.48.0
+
+# Data
+numpy>=1.26.0
+pandas>=2.2.0
+tqdm>=4.67.0
+
+# Backend
 fastapi>=0.115.0
 uvicorn>=0.34.0
 pydantic>=2.10.0
-numpy>=2.1.0
-pandas>=2.2.0
-tqdm>=4.67.0
+python-multipart>=0.0.9
+
+# Evaluation
+mir_eval>=0.7
