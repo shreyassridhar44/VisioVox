@@ -162,12 +162,10 @@ class VisioVoxSeparator:
         return lip_frames[best_frame_num]
 
     def _lip_to_tensor(self, lip_np: np.ndarray) -> torch.Tensor:
-        """(112,112) float32 → [1,1,112,112] tensor on device."""
-        return (
-            torch.tensor(lip_np)
-            .unsqueeze(0).unsqueeze(0)
-            .to(self.device)
-        )
+        """(112,112) float32 -> [1, 25, 1, 112, 112] — replicate single frame 25x."""
+        frame  = torch.tensor(lip_np).unsqueeze(0).unsqueeze(0)  # [1, 1, 112, 112]
+        frames = frame.repeat(1, 25, 1, 1, 1)                    # [1, 25, 1, 112, 112]
+        return frames.to(self.device)
 
     # ── Smart noise gate (identical to Colab version) ─────────────────────────
 
@@ -238,7 +236,7 @@ class VisioVoxSeparator:
                 mixed_mag, mixed_phase = self._audio_to_spectrogram(chunk_wave)
 
                 # 3. Model forward pass → mask
-                predicted_mask = self.model(mixed_mag, lips_tensor)
+                predicted_mask, _ = self.model(mixed_mag, lips_tensor)
                 predicted_mask = torch.clamp(predicted_mask, 0.0, 1.0)
 
                 # 4. Smart noise gate

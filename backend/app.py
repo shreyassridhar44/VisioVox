@@ -42,7 +42,7 @@ from utils.logger import get_logger
 logger = get_logger("Backend")
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-CHECKPOINT_PATH = Path("checkpoints/visiovox_epoch_20.pth")
+CHECKPOINT_PATH = Path("checkpoints/visiovox_devA_best.pth")
 JOBS_DIR        = Path("jobs")
 JOBS_DIR.mkdir(exist_ok=True)
 

@@ -1,120 +1,90 @@
-# training/dataset_loader.py
-import os
-import torch
-import librosa
-import cv2
-import pandas as pd
-import numpy as np
-from torch.utils.data import Dataset, DataLoader
-from pathlib import Path
-from utils.logger import get_logger
+# training/dataset_loader.py  -  VisioVox v4
+# Loads ALL 25 lip frames per clip (not just the middle frame)
+# Also loads interferer audio and lips for PIT + contrastive loss
 
-logger = get_logger("DatasetLoader")
+import random
+import numpy as np
+import pandas as pd
+import cv2
+import librosa
+import torch
+from torch.utils.data import Dataset
+from pathlib import Path
+
+SAMPLE_RATE    = 16000
+N_FFT          = 510
+HOP_LENGTH     = 160
+WIN_LENGTH     = 400
+TARGET_SAMPLES = 48000
+NUM_FRAMES     = 25
+FREQ_MASK_MAX  = 30
+TIME_MASK_MAX  = 30
+N_FREQ_MASKS   = 2
+N_TIME_MASKS   = 2
+
+
+def spec_augment(spec):
+    spec = spec.clone()
+    _, F, T = spec.shape
+    for _ in range(N_FREQ_MASKS):
+        f  = random.randint(0, FREQ_MASK_MAX)
+        f0 = random.randint(0, max(F - f, 1))
+        spec[:, f0:f0 + f, :] = 0.0
+    for _ in range(N_TIME_MASKS):
+        t  = random.randint(0, TIME_MASK_MAX)
+        t0 = random.randint(0, max(T - t, 1))
+        spec[:, :, t0:t0 + t] = 0.0
+    return spec
+
 
 class VisioVoxDataset(Dataset):
-    def __init__(self, metadata_path: str, audio_length_sec: float = 3.0, sample_rate: int = 16000):
-        self.metadata = pd.read_csv(metadata_path)
-        self.sample_rate = sample_rate
-        # Lock audio to exact number of samples (e.g., 3 seconds * 16000 = 48000)
-        self.target_samples = int(audio_length_sec * sample_rate)
-        
-        # STFT Parameters
-        self.n_fft = 510  # n_fft//2 + 1 = 256 frequency bins (perfect for our U-Net)
-        self.hop_length = 160
-        self.win_length = 400
-        self.window = torch.hann_window(self.win_length)
+    def __init__(self, metadata_path: str, augment=False):
+        self.meta    = pd.read_csv(metadata_path)
+        self.window  = torch.hann_window(WIN_LENGTH)
+        self.augment = augment
 
     def __len__(self):
-        return len(self.metadata)
+        return len(self.meta)
 
-    def _process_audio(self, audio_path):
-        """Loads audio, pads/truncates to target length, and computes STFT Spectrogram."""
-        wave, _ = librosa.load(audio_path, sr=self.sample_rate, mono=True)
-        
-        # Truncate or Pad to ensure uniform batch sizes
-        if len(wave) > self.target_samples:
-            wave = wave[:self.target_samples]
+    def _spec(self, path):
+        w, _ = librosa.load(str(path), sr=SAMPLE_RATE, mono=True)
+        if len(w) >= TARGET_SAMPLES:
+            w = w[:TARGET_SAMPLES]
         else:
-            padding = self.target_samples - len(wave)
-            wave = np.pad(wave, (0, padding), mode='constant')
-            
-        # Convert to PyTorch tensor
-        wave_tensor = torch.tensor(wave)
-        
-        # Compute STFT (Spectrogram)
-        stft = torch.stft(
-            wave_tensor,
-            n_fft=self.n_fft,
-            hop_length=self.hop_length,
-            win_length=self.win_length,
-            window=self.window,
-            return_complex=True
-        )
-        
-        # We only need the magnitude (absolute value) for the U-Net Mask
-        magnitude = torch.abs(stft).unsqueeze(0) # Shape: [1, 256, TimeSteps]
-        return magnitude
+            w = np.pad(w, (0, TARGET_SAMPLES - len(w)))
+        t    = torch.tensor(w, dtype=torch.float32)
+        s    = torch.stft(t, n_fft=N_FFT, hop_length=HOP_LENGTH,
+                          win_length=WIN_LENGTH, window=self.window,
+                          return_complex=True)
+        spec = torch.abs(s).unsqueeze(0)   # [1, 256, T]
+        if self.augment:
+            spec = spec_augment(spec)
+        return spec
 
-    def _get_lip_frame(self, lips_dir):
-        """Grabs the middle frame from the target speaker's lip directory."""
-        lip_path_obj = Path(lips_dir)
-        frames = sorted(list(lip_path_obj.glob("*.jpg")))
-        
-        if not frames:
-            # Fallback if a folder is empty (shouldn't happen with our valid_samples check)
-            return torch.zeros(1, 112, 112)
-            
-        # Pick the middle frame to ensure the mouth is likely active
-        middle_idx = len(frames) // 2
-        frame_path = frames[middle_idx]
-        
-        # Read grayscale and normalize between 0 and 1
-        img = cv2.imread(str(frame_path), cv2.IMREAD_GRAYSCALE)
-        img = img.astype(np.float32) / 255.0
-        
-        # Shape: [1, 112, 112]
-        img_tensor = torch.tensor(img).unsqueeze(0)
-        return img_tensor
+    def _lips(self, d):
+        paths  = sorted(Path(d).glob("*.jpg"))
+        frames = []
+        for p in paths[:NUM_FRAMES]:
+            img = cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)
+            frames.append(
+                cv2.resize(img, (112, 112)).astype(np.float32) / 255.0
+                if img is not None else np.zeros((112, 112), np.float32)
+            )
+        while len(frames) < NUM_FRAMES:
+            frames.append(np.zeros((112, 112), np.float32))
+        return torch.tensor(np.stack(frames)).unsqueeze(1)  # [25, 1, 112, 112]
 
     def __getitem__(self, idx):
-        row = self.metadata.iloc[idx]
-        
-        # 1. Load Mixed Audio (Input)
-        mixed_spec = self._process_audio(row['mixed_audio_path'])
-        
-        # 2. Load Target Audio (Ground Truth we want the model to isolate)
-        target_spec = self._process_audio(row['target_audio_path'])
-        
-        # 3. Load Target Lips (Visual Cue)
-        target_lips = self._get_lip_frame(row['target_lips_dir'])
-        
-        return mixed_spec, target_spec, target_lips
-
-# --- Standalone Local Test ---
-if __name__ == "__main__":
-    METADATA_CSV = "data/processed/dataset_metadata.csv"
-    
-    try:
-        logger.info("Initializing Dataset...")
-        dataset = VisioVoxDataset(metadata_path=METADATA_CSV)
-        logger.info(f"Total mixtures in dataset: {len(dataset)}")
-        
-        # Create a DataLoader to test batching
-        dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
-        
-        logger.info("Fetching a single batch to verify tensor shapes...")
-        mixed_batch, target_batch, lips_batch = next(iter(dataloader))
-        
-        logger.info(f"Mixed Spectrogram Batch Shape: {mixed_batch.shape}")
-        logger.info(f"Target Spectrogram Batch Shape: {target_batch.shape}")
-        logger.info(f"Lip Frames Batch Shape: {lips_batch.shape}")
-        
-        # Verification checks
-        assert mixed_batch.shape[1] == 1, "Spectrogram should have 1 channel"
-        assert mixed_batch.shape[2] == 256, "Spectrogram should have 256 frequency bins"
-        assert lips_batch.shape[2] == 112 and lips_batch.shape[3] == 112, "Lips must be 112x112"
-        
-        logger.info("All tensor shapes are verified. Dataset Loader is ready for training!")
-        
-    except Exception as e:
-        logger.error(f"Error testing Dataset Loader: {e}")
+        r = self.meta.iloc[idx]
+        try:
+            return (
+                self._spec(r["mixed_audio_path"]),
+                self._spec(r["target_audio_path"]),
+                self._lips(r["target_lips_dir"]),
+                self._spec(r["interfere_audio"]),
+                self._lips(r["interfere_lips"]),
+            )
+        except Exception:
+            ds = torch.zeros(1, 256, 301)
+            dl = torch.zeros(NUM_FRAMES, 1, 112, 112)
+            return ds, ds, dl, ds, dl

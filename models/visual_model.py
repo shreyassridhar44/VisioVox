@@ -1,78 +1,51 @@
-# models/visual_model.py
+# models/visual_model.py  -  VisioVox v4
+# TemporalVisualEncoder: 25 lip frames -> 128-dim embedding
+# Uses 3D Conv frontend for temporal motion + ResNet18 + LayerNorm
+# LayerNorm on output keeps visual embedding on same scale as audio bottleneck
+
 import torch
 import torch.nn as nn
 from torchvision.models import resnet18, ResNet18_Weights
-import logging
 
-# Basic logger for standalone testing
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("VisualModel")
+VISUAL_DIM = 128
 
-class VisualEncoder(nn.Module):
-    def __init__(self, embedding_dim=128):
-        super(VisualEncoder, self).__init__()
-        
-        logger.info("Initializing Pretrained ResNet-18...")
-        # Load the pretrained ResNet-18 model
-        resnet = resnet18(weights=ResNet18_Weights.DEFAULT)
-        
-        # 1. Modify the first convolutional layer
-        # Standard ResNet takes 3 channels (RGB). We change it to 1 channel (Grayscale).
-        self.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
-        
-        # Pro-tip: Copy the averaged weights from the original RGB layer so we don't start from scratch
-        with torch.no_grad():
-            self.conv1.weight[:] = resnet.conv1.weight.mean(dim=1, keepdim=True)
-            
-        # 2. Copy the rest of the standard ResNet layers
-        self.bn1 = resnet.bn1
-        self.relu = resnet.relu
-        self.maxpool = resnet.maxpool
-        self.layer1 = resnet.layer1
-        self.layer2 = resnet.layer2
-        self.layer3 = resnet.layer3
-        self.layer4 = resnet.layer4
+
+class TemporalVisualEncoder(nn.Module):
+    def __init__(self, embedding_dim=VISUAL_DIM):
+        super().__init__()
+        self.frontend3d = nn.Sequential(
+            nn.Conv3d(1, 64, kernel_size=(5, 7, 7),
+                      stride=(1, 2, 2), padding=(2, 3, 3), bias=False),
+            nn.BatchNorm3d(64),
+            nn.ReLU(inplace=True),
+            nn.MaxPool3d(kernel_size=(1, 3, 3), stride=(1, 2, 2), padding=(0, 1, 1)),
+        )
+        resnet       = resnet18(weights=ResNet18_Weights.DEFAULT)
+        self.layer1  = resnet.layer1
+        self.layer2  = resnet.layer2
+        self.layer3  = resnet.layer3
+        self.layer4  = resnet.layer4
         self.avgpool = resnet.avgpool
-        
-        # 3. Replace the final classification head
-        # We don't want it to classify 1000 ImageNet classes; we want a custom embedding vector.
-        self.fc = nn.Linear(resnet.fc.in_features, embedding_dim)
-        
+        self.fc      = nn.Linear(resnet.fc.in_features, embedding_dim)
+        self.norm    = nn.LayerNorm(embedding_dim)
+        self.drop    = nn.Dropout(p=0.3)
+
     def forward(self, x):
-        # Input shape expected: (Batch Size, Channels=1, Height=112, Width=112)
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu(x)
-        x = self.maxpool(x)
-        
+        # x: [B, T, C, H, W] = [B, 25, 1, 112, 112]
+        B, T, C, H, W = x.shape
+        x = x.permute(0, 2, 1, 3, 4)   # [B, C, T, H, W]
+        x = self.frontend3d(x)          # [B, 64, T', H', W']
+        x = x.mean(dim=2)               # temporal mean pool -> [B, 64, H', W']
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
         x = self.layer4(x)
-        
         x = self.avgpool(x)
-        x = torch.flatten(x, 1)  # Flatten spatial dimensions
-        x = self.fc(x)           # Output the embedding
-        
-        return x
+        x = torch.flatten(x, 1)
+        x = self.drop(x)
+        x = self.fc(x)
+        return self.norm(x)             # [B, 128]
 
-# --- Standalone Test ---
-if __name__ == "__main__":
-    # Let's run a dummy test to ensure PyTorch compiles it and tensor math works
-    try:
-        model = VisualEncoder(embedding_dim=128)
-        logger.info("Model initialized successfully.")
-        
-        # Create a dummy tensor representing a batch of 2 grayscale lip frames (112x112)
-        # Shape: (Batch_Size=2, Channels=1, Height=112, Width=112)
-        dummy_input = torch.randn(2, 1, 112, 112)
-        logger.info(f"Passing dummy input with shape: {dummy_input.shape}")
-        
-        # Pass it through the model
-        output = model(dummy_input)
-        
-        logger.info(f"Forward pass successful! Output shape: {output.shape}")
-        logger.info("Expected shape is [2, 128]. If it matches, we are good to go!")
-        
-    except Exception as e:
-        logger.error(f"Error during model testing: {e}")
+
+# Alias so any old import of VisualEncoder still works
+VisualEncoder = TemporalVisualEncoder
