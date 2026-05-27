@@ -1,13 +1,11 @@
 import os
-import sys
 import cv2
 import subprocess
-import multiprocessing
 import numpy as np
 import pandas as pd
 from pathlib import Path
 from tqdm import tqdm
-from concurrent.futures import ProcessPoolExecutor, as_completed
+import concurrent.futures
 
 # ── Config ────────────────────────────────────────────────────
 PARTS = [
@@ -22,164 +20,130 @@ PARTS = [
 ]
 
 PROJECT_DIR  = "E:\\visiovox"
-OUTPUT_DIR   = os.path.join(PROJECT_DIR, "data\\devA_processed")
-MANIFEST_OUT = os.path.join(PROJECT_DIR, "data\\devA_manifest.csv")
+OUTPUT_DIR   = "D:\\visiovox_data\\devA_processed"
+MANIFEST_OUT = "D:\\visiovox_data\\devA_manifest.csv"
+FFMPEG       = r"C:\Users\Admin\Downloads\ffmpeg-8.1.1-essentials_build\ffmpeg-8.1.1-essentials_build\bin\ffmpeg.exe"
 
 SAMPLE_RATE    = 16000
 NUM_LIP_FRAMES = 25
 CROP_SIZE      = 112
 DNN_CONF       = 0.4
-FACE_PAD       = 30
-NUM_WORKERS    = 12
+NUM_WORKERS    = 16
+BATCH_SIZE     = 100
 
 PROTOTXT   = os.path.join(PROJECT_DIR, "deploy.prototxt")
 CAFFEMODEL = os.path.join(PROJECT_DIR, "res10_300x300_ssd.caffemodel")
 
-# ── Download face detector models if needed ───────────────────
-def ensure_face_detector():
-    import urllib.request
-    if not os.path.exists(PROTOTXT):
-        print("Downloading face detector prototxt...")
-        urllib.request.urlretrieve(
-            "https://raw.githubusercontent.com/opencv/opencv/master/samples/dnn/face_detector/deploy.prototxt",
-            PROTOTXT
-        )
-    if not os.path.exists(CAFFEMODEL):
-        print("Downloading face detector caffemodel...")
-        urllib.request.urlretrieve(
-            "https://github.com/opencv/opencv_3rdparty/raw/dnn_samples_face_detector_20170830/res10_300x300_ssd_iter_140000.caffemodel",
-            CAFFEMODEL
-        )
-    print("Face detector models ready.")
 
-# ── Audio extraction using system ffmpeg ──────────────────────
-def extract_audio(video_path: str, audio_out: str) -> bool:
-    try:
-        result = subprocess.run(
-            ["ffmpeg", "-y", "-i", video_path,
-             "-ac", "1", "-ar", str(SAMPLE_RATE),
-             audio_out],
-            capture_output=True,
-            timeout=30
-        )
-        return result.returncode == 0 and os.path.exists(audio_out)
-    except Exception:
-        return False
-
-# ── Lip frame extraction ──────────────────────────────────────
-def extract_lip_frames(video_path: str, lips_out_dir: str,
-                       n_frames: int = NUM_LIP_FRAMES) -> bool:
-    # Each worker process creates its own net (can't share across processes)
-    net = cv2.dnn.readNetFromCaffe(PROTOTXT, CAFFEMODEL)
-
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        return False
-
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    if total < 5:
-        cap.release()
-        return False
-
-    # Sample n_frames evenly across middle 80% of clip
-    start_frame = int(total * 0.1)
-    end_frame   = int(total * 0.9)
-    if end_frame - start_frame < n_frames:
-        start_frame = 0
-        end_frame   = total
-
-    sample_indices = [
-        int(start_frame + (end_frame - start_frame) * i / n_frames)
-        for i in range(n_frames)
-    ]
-
-    os.makedirs(lips_out_dir, exist_ok=True)
-    saved = 0
-
-    for frame_num in sample_indices:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
-        ret, frame = cap.read()
-        if not ret:
-            continue
-
-        # Detect face
-        h, w = frame.shape[:2]
-        lab  = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
-        l, a, b = cv2.split(lab)
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-        l     = clahe.apply(l)
-        enhanced = cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
-
-        blob = cv2.dnn.blobFromImage(
-            cv2.resize(enhanced, (300, 300)),
-            1.0, (300, 300), (104, 177, 123)
-        )
-        net.setInput(blob)
-        dets = net.forward()
-
-        best_conf = 0
-        best_box  = None
-        for i in range(dets.shape[2]):
-            conf = float(dets[0, 0, i, 2])
-            if conf > best_conf and conf >= DNN_CONF:
-                best_conf = conf
-                box = dets[0, 0, i, 3:7] * np.array([w, h, w, h])
-                x1, y1, x2, y2 = box.astype(int)
-                x1 = max(0, x1); y1 = max(0, y1)
-                x2 = min(w, x2); y2 = min(h, y2)
-                if x2 > x1 and y2 > y1:
-                    best_box = (x1, y1, x2, y2)
-
-        if best_box is None:
-            continue
-
-        # Extract lip crop
-        x1, y1, x2, y2 = best_box
-        lip_cx = int((x1 + x2) / 2)
-        lip_cy = int(y1 + (y2 - y1) * 0.75)
-        half   = CROP_SIZE // 2
-        lx1 = max(0, lip_cx - half); lx2 = min(w, lip_cx + half)
-        ly1 = max(0, lip_cy - half); ly2 = min(h, lip_cy + half)
-
-        if lx2 - lx1 != CROP_SIZE or ly2 - ly1 != CROP_SIZE:
-            continue
-
-        lip = cv2.cvtColor(frame[ly1:ly2, lx1:lx2], cv2.COLOR_BGR2GRAY)
-        cv2.imwrite(
-            os.path.join(lips_out_dir, f"frame_{saved:05d}.jpg"),
-            lip
-        )
-        saved += 1
-
-    cap.release()
-    return saved >= 10  # need at least 10 frames
-
-# ── Worker function (runs in separate process) ────────────────
 def process_clip(args):
     clip_path, clip_id, speaker, output_dir = args
 
     audio_dir = os.path.join(output_dir, "audio", speaker)
     lips_dir  = os.path.join(output_dir, "lips", speaker,
-                              Path(clip_path).stem)
-
+                             Path(clip_path).stem)
     os.makedirs(audio_dir, exist_ok=True)
     audio_out = os.path.join(audio_dir, f"{Path(clip_path).stem}.wav")
 
     try:
-        # Extract audio
+        # ── Audio ─────────────────────────────────────────────
         if not os.path.exists(audio_out):
-            ok = extract_audio(clip_path, audio_out)
-            if not ok:
+            result = subprocess.run(
+                [FFMPEG, "-y", "-i", clip_path,
+                 "-ac", "1", "-ar", str(SAMPLE_RATE), audio_out],
+                capture_output=True, timeout=30
+            )
+            if result.returncode != 0 or not os.path.exists(audio_out):
                 return None, clip_id
 
-        # Extract lip frames
-        lip_frames = list(Path(lips_dir).glob("*.jpg")) if os.path.exists(lips_dir) else []
-        if len(lip_frames) < 10:
-            ok = extract_lip_frames(clip_path, lips_dir)
-            if not ok:
-                if os.path.exists(audio_out):
-                    os.remove(audio_out)
-                return None, clip_id
+        # ── Lips ──────────────────────────────────────────────
+        existing = list(Path(lips_dir).glob("*.jpg")) if os.path.exists(lips_dir) else []
+        if len(existing) >= 10:
+            return {
+                "clip_id":    clip_id,
+                "speaker":    speaker,
+                "audio_path": audio_out,
+                "lips_dir":   lips_dir,
+                "clip_path":  clip_path,
+            }, None
+
+        net = cv2.dnn.readNetFromCaffe(PROTOTXT, CAFFEMODEL)
+        cap = cv2.VideoCapture(clip_path)
+        if not cap.isOpened():
+            return None, clip_id
+
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if total < 5:
+            cap.release()
+            return None, clip_id
+
+        start_f = int(total * 0.1)
+        end_f   = int(total * 0.9)
+        if end_f - start_f < NUM_LIP_FRAMES:
+            start_f, end_f = 0, total
+
+        indices = [
+            int(start_f + (end_f - start_f) * i / NUM_LIP_FRAMES)
+            for i in range(NUM_LIP_FRAMES)
+        ]
+
+        os.makedirs(lips_dir, exist_ok=True)
+        saved = 0
+
+        for fn in indices:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, fn)
+            ret, frame = cap.read()
+            if not ret:
+                continue
+
+            h, w = frame.shape[:2]
+            lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+            l, a, b = cv2.split(lab)
+            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+            l = clahe.apply(l)
+            enhanced = cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
+
+            blob = cv2.dnn.blobFromImage(
+                cv2.resize(enhanced, (300, 300)),
+                1.0, (300, 300), (104, 177, 123)
+            )
+            net.setInput(blob)
+            dets = net.forward()
+
+            best_conf, best_box = 0, None
+            for i in range(dets.shape[2]):
+                conf = float(dets[0, 0, i, 2])
+                if conf > best_conf and conf >= DNN_CONF:
+                    best_conf = conf
+                    box = dets[0, 0, i, 3:7] * np.array([w, h, w, h])
+                    x1, y1, x2, y2 = box.astype(int)
+                    x1 = max(0, x1); y1 = max(0, y1)
+                    x2 = min(w, x2); y2 = min(h, y2)
+                    if x2 > x1 and y2 > y1:
+                        best_box = (x1, y1, x2, y2)
+
+            if best_box is None:
+                continue
+
+            x1, y1, x2, y2 = best_box
+            lip_cx = int((x1 + x2) / 2)
+            lip_cy = int(y1 + (y2 - y1) * 0.75)
+            half   = CROP_SIZE // 2
+            lx1 = max(0, lip_cx - half); lx2 = min(w, lip_cx + half)
+            ly1 = max(0, lip_cy - half); ly2 = min(h, lip_cy + half)
+
+            if lx2 - lx1 != CROP_SIZE or ly2 - ly1 != CROP_SIZE:
+                continue
+
+            lip = cv2.cvtColor(frame[ly1:ly2, lx1:lx2], cv2.COLOR_BGR2GRAY)
+            cv2.imwrite(os.path.join(lips_dir, f"frame_{saved:05d}.jpg"), lip)
+            saved += 1
+
+        cap.release()
+
+        if saved < 10:
+            if os.path.exists(audio_out):
+                os.remove(audio_out)
+            return None, clip_id
 
         return {
             "clip_id":    clip_id,
@@ -192,14 +156,12 @@ def process_clip(args):
     except Exception as e:
         return None, f"{clip_id}: {str(e)}"
 
-# ── Main ──────────────────────────────────────────────────────
-def main():
-    ensure_face_detector()
 
+def main():
     os.makedirs(os.path.join(PROJECT_DIR, "data"), exist_ok=True)
     manifest_path = Path(MANIFEST_OUT)
 
-    # Resume from existing manifest
+    # Resume
     if manifest_path.exists() and manifest_path.stat().st_size > 10:
         try:
             existing = pd.read_csv(manifest_path)
@@ -207,14 +169,13 @@ def main():
             records  = existing.to_dict("records")
             print(f"Resuming -- {len(done_ids):,} clips already done")
         except Exception:
-            print("Manifest corrupt -- starting fresh")
             done_ids = set()
             records  = []
     else:
         done_ids = set()
         records  = []
 
-    # Collect clips from ALL 8 parts
+    # Collect all clips
     all_clips = []
     for part in PARTS:
         dev_path = Path(f"E:\\{part}\\dev\\mp4")
@@ -237,55 +198,52 @@ def main():
                             OUTPUT_DIR,
                         ))
 
-    print(f"Total clips across all 8 parts : {len(all_clips) + len(done_ids):,}")
-    print(f"Already done                   : {len(done_ids):,}")
-    print(f"Remaining to process           : {len(all_clips):,}")
-    print(f"Workers                        : {NUM_WORKERS}")
+    print(f"Total clips : {len(all_clips) + len(done_ids):,}")
+    print(f"Already done: {len(done_ids):,}")
+    print(f"Remaining   : {len(all_clips):,}")
+    print(f"Workers     : {NUM_WORKERS}")
     print()
 
     if not all_clips:
-        print("Nothing to do -- all clips already processed.")
+        print("Nothing to do.")
         return
 
     success = 0
     failed  = 0
 
-    with ProcessPoolExecutor(max_workers=NUM_WORKERS) as executor:
-        futures = {executor.submit(process_clip, args): args[1]
-                   for args in all_clips}
+    with tqdm(total=len(all_clips), desc="Processing") as pbar:
+        # Process in batches to avoid overwhelming Windows
+        for batch_start in range(0, len(all_clips), BATCH_SIZE):
+            batch = all_clips[batch_start: batch_start + BATCH_SIZE]
 
-        with tqdm(total=len(all_clips), desc="Processing") as pbar:
-            for future in as_completed(futures):
-                record, error = future.result()
-                if record:
-                    records.append(record)
-                    success += 1
-                else:
-                    failed += 1
-                    if failed <= 5:
-                        tqdm.write(f"  SKIP: {error}")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
+                futures = {executor.submit(process_clip, args): args[1]
+                           for args in batch}
+                for future in concurrent.futures.as_completed(futures):
+                    record, error = future.result()
+                    if record:
+                        records.append(record)
+                        success += 1
+                    else:
+                        failed += 1
 
-                if (success + failed) % 500 == 0:
-                    pd.DataFrame(records).to_csv(manifest_path, index=False)
-                    tqdm.write(
-                        f"  Progress saved -- "
-                        f"success={success:,} failed={failed:,}"
-                    )
+                    pbar.update(1)
+                    pbar.set_postfix(ok=success, fail=failed)
 
-                pbar.update(1)
+            # Save after every batch
+            if (batch_start // BATCH_SIZE) % 5 == 0:
+                pd.DataFrame(records).to_csv(manifest_path, index=False)
+                tqdm.write(f"  Saved -- success={success:,} failed={failed:,}")
 
     # Final save
     pd.DataFrame(records).to_csv(manifest_path, index=False)
 
     print()
     print("=" * 55)
-    print(f"Processing complete!")
+    print("Processing complete!")
     print(f"  Successful : {success:,}")
     print(f"  Failed     : {failed:,}")
     print(f"  Total done : {len(records):,}")
-    print(f"  Manifest   : {MANIFEST_OUT}")
-    print()
-    print("Next: python create_mixtures_devA.py")
     print("=" * 55)
 
 

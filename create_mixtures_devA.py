@@ -17,12 +17,12 @@ from tqdm import tqdm
 
 # ── Config ────────────────────────────────────────────────────
 PROJECT_DIR   = "E:\\visiovox"
-MANIFEST_PATH = "E:\\visiovox\\data\\devA_manifest.csv"
-OUTPUT_DIR    = "E:\\visiovox\\data\\devA_processed\\mixtures"
-METADATA_OUT  = "E:\\visiovox\\data\\devA_training_metadata.csv"
+MANIFEST_PATH = "D:\\visiovox_data\\devA_manifest.csv"
+OUTPUT_DIR    = "D:\\visiovox_data\\devA_processed\\mixtures"
+METADATA_OUT  = "D:\\visiovox_data\\devA_training_metadata.csv"
 NUM_MIXTURES  = 500000
-SAMPLE_RATE    = 16000
-CLIP_SAMPLES   = int(3.0 * SAMPLE_RATE)   # 48000 samples = 3 seconds
+SAMPLE_RATE   = 16000
+CLIP_SAMPLES  = int(3.0 * SAMPLE_RATE)
 
 random.seed(42)
 np.random.seed(42)

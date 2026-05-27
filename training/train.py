@@ -35,8 +35,8 @@ logger = logging.getLogger("VisioVox")
 
 # ── Config ────────────────────────────────────────────────────────────────────
 PROJECT_DIR    = Path("E:/visiovox")
-METADATA_CSV   = PROJECT_DIR / "data" / "devA_training_metadata.csv"
-CHECKPOINT_DIR = PROJECT_DIR / "checkpoints"
+METADATA_CSV   = Path("D:/visiovox_data/devA_training_metadata.csv")
+CHECKPOINT_DIR = Path("E:/visiovox/checkpoints")
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
 EPOCHS         = 200
