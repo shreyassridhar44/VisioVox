@@ -21,8 +21,7 @@ ENV/
 *.bin
 
 # ── Dataset (CRITICAL — VoxCeleb2 license prohibits redistribution) ───────────
-data/raw/*
-data/processed/*
+data/
 
 # ── Backend job working directories ──────────────────────────────────────────
 # Created at runtime by FastAPI. Contains uploaded videos, extracted audio,
